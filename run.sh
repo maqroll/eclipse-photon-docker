@@ -1,12 +1,12 @@
 #!/bin/bash
 
+xhost $(ifconfig en0 | grep inet | awk '$1=="inet" {print $2}'); 
+
 MY_DIR=$(dirname "$(readlink -f "$0")")
 
 if [ $# -lt 1 ]; then
     echo "Usage: "
-    echo "  ${0} <container_shell_command>"
-    echo "e.g.: "
-    echo "  ${0} ls -al "
+    echo "  ${0} <image_tag>"
 fi
 
 ###################################################
@@ -17,10 +17,11 @@ baseDataFolder="$HOME/data-docker"
 
 ###################################################
 #### **** Container package information ****
+#### ---- (Don't change this section!)  ----
 ###################################################
 MY_IP=`ip route get 1|awk '{print$NF;exit;}'`
 DOCKER_IMAGE_REPO=`echo $(basename $PWD)|tr '[:upper:]' '[:lower:]'|tr "/: " "_" `
-imageTag="${ORGANIZATION}/${DOCKER_IMAGE_REPO}"
+imageTag=${1:-"${ORGANIZATION}/${DOCKER_IMAGE_REPO}"}
 #PACKAGE=`echo ${imageTag##*/}|tr "/\-: " "_"`
 PACKAGE="${imageTag##*/}"
 
@@ -62,91 +63,35 @@ LOCAL_VOLUME_DIR="${baseDataFolder}/${PACKAGE}"
 ## -- Container's internal Volume base DIR
 DOCKER_VOLUME_DIR="/home/developer"
 
-
-###################################################
-#### ---- Detect docker ----
-###################################################
-DOCKER_ENV_FILE="./.env"
-function detectDockerEnvFile() {
-    curr_dir=`pwd`
-    if [ -s "./.env" ]; then
-        echo "--- INFO: ./.env Docker Environment file (.env) FOUND!"
-        DOCKER_ENV_FILE="./.env"
-    else
-        echo "--- INFO: ./.env Docker Environment file (.env) NOT found!"
-        if [ -s "./docker.env" ]; then
-            DOCKER_ENV_FILE="./docker.env"
-        else
-            echo "*** WARNING: Docker Environment file (.env) or (docker.env) NOT found!"
-        fi
-    fi
-}
-detectDockerEnvFile
-
 ###################################################
 #### ---- Function: Generate volume mappings  ----
-####      (Don't change!)
+#### ---- (Don't change this section!)        ----
 ###################################################
 VOLUME_MAP=""
 #### Input: VOLUMES - list of volumes to be mapped
-hasPattern=0
-function hasPattern() {
-    detect=`echo $1|grep "$2"`
-    if [ "${detect}" != "" ]; then
-        hasPattern=1
-    else
-        hasPattern=0
-    fi
-}
-
 function generateVolumeMapping() {
     if [ "$VOLUMES_LIST" == "" ]; then
         ## -- If locally defined in this file, then respect that first.
         ## -- Otherwise, go lookup the docker.env as ride-along source for volume definitions
-        VOLUMES_LIST=`cat ${DOCKER_ENV_FILE}|grep "^#VOLUMES_LIST= *"|sed "s/[#\"]//g"|cut -d'=' -f2-`
+        VOLUMES_LIST=`cat docker.env|grep "^#VOLUMES_LIST= *"|sed "s/[#\"]//g"|cut -d'=' -f2-`
     fi
     for vol in $VOLUMES_LIST; do
-        echo "$vol"
-        hasColon=`echo $vol|grep ":"`
-        ## -- allowing change local volume directories --
-        if [ "$hasColon" != "" ]; then
-            left=`echo $vol|cut -d':' -f1`
-            right=`echo $vol|cut -d':' -f2`
-            leftHasDot=`echo $left|grep "\./"`
-            if [ "$leftHasDot" != "" ]; then
-                ## has "./data" on the left
-                if [[ ${right} == "/"* ]]; then
-                    ## -- pattern like: "./data:/containerPath/data"
-                    echo "-- pattern like ./data:/data --"
-                    VOLUME_MAP="${VOLUME_MAP} -v `pwd`/${left}:${right}"
-                else
-                    ## -- pattern like: "./data:data"
-                    echo "-- pattern like ./data:data --"
-                    VOLUME_MAP="${VOLUME_MAP} -v `pwd`/${left}:${DOCKER_VOLUME_DIR}/${right}"
-                fi
-                mkdir -p `pwd`/${left}
-                ls -al `pwd`/${left}
-            else
-                ## No "./data" on the left
-                if [[ ${right} == "/"* ]]; then
-                    ## -- pattern like: "data:/containerPath/data"
-                    echo "-- pattern like ./data:/data --"
-                    VOLUME_MAP="${VOLUME_MAP} -v ${LOCAL_VOLUME_DIR}/${left}:${right}"
-                else
-                    ## -- pattern like: "data:data"
-                    echo "-- pattern like data:data --"
-                    VOLUME_MAP="${VOLUME_MAP} -v ${LOCAL_VOLUME_DIR}/${left}:${DOCKER_VOLUME_DIR}/${right}"
-                fi
-                mkdir -p ${LOCAL_VOLUME_DIR}/${left}
-                ls -al ${LOCAL_VOLUME_DIR}/${left}
-            fi
+        #echo "$vol"
+	hasColon=`echo $vol|grep ":"`
+        if [ ! "$hasColon" == "" ]; then
+            # asymetric mapping paths, like "/srv/docker/bind:/data"
+            VOLUME_MAP="${VOLUME_MAP} -v $vol" 
         else
-            ## -- pattern like: "data"
-            echo "-- default sub-directory (without prefix absolute path) --"
-            VOLUME_MAP="${VOLUME_MAP} -v ${LOCAL_VOLUME_DIR}/$vol:${DOCKER_VOLUME_DIR}/$vol"
-            mkdir -p ${LOCAL_VOLUME_DIR}/$vol
-            ls -al ${LOCAL_VOLUME_DIR}/$vol
+            if [[ $vol == "/"* ]]; then
+                echo "-- non-default /home/developer path; then use the full absolute path --"
+                VOLUME_MAP="${VOLUME_MAP} -v ${LOCAL_VOLUME_DIR}$vol:$vol"
+            else
+                echo "-- default sub-directory (without prefix absolute path) --"
+                VOLUME_MAP="${VOLUME_MAP} -v ${LOCAL_VOLUME_DIR}/$vol:${DOCKER_VOLUME_DIR}/$vol"
+            fi
         fi
+        mkdir -p ${LOCAL_VOLUME_DIR}/$vol
+        ls -al ${LOCAL_VOLUME_DIR}/$vol
     done
 }
 #### ---- Generate Volumes Mapping ----
@@ -154,15 +99,15 @@ generateVolumeMapping
 echo ${VOLUME_MAP}
 
 ###################################################
-#### ---- Function: Generate port mappings  ----
-####      (Don't change!)
+#### ---- Function: Generate port mappings     ----
+#### ---- (Don't change this section!)         ----
 ###################################################
 PORT_MAP=""
 function generatePortMapping() {
     if [ "$PORTS" == "" ]; then
         ## -- If locally defined in this file, then respect that first.
-        ## -- Otherwise, go lookup the ${DOCKER_ENV_FILE} as ride-along source for volume definitions
-        PORTS_LIST=`cat ${DOCKER_ENV_FILE}|grep "^#PORTS_LIST= *"|sed "s/[#\"]//g"|cut -d'=' -f2-`
+        ## -- Otherwise, go lookup the docker.env as ride-along source for volume definitions
+        PORTS_LIST=`cat docker.env|grep "^#PORTS_LIST= *"|sed "s/[#\"]//g"|cut -d'=' -f2-`
     fi
     for pp in ${PORTS_LIST}; do
         #echo "$pp"
@@ -181,7 +126,7 @@ echo ${PORT_MAP}
 
 ###################################################
 #### ---- Function: Generate privilege String  ----
-####      (Don't change!)
+#### ---- (Don't change this section!)         ----
 ###################################################
 privilegedString=""
 function generatePrivilegedString() {
@@ -198,7 +143,8 @@ generatePrivilegedString
 echo ${privilegedString}
 
 ###################################################
-#### ---- Mostly, you don't need change below ----
+#### ---- Mostly, you don't need change below  ----
+#### ---- (Don't change this section!)         ----
 ###################################################
 function cleanup() {
     if [ ! "`docker ps -a|grep ${instanceName}`" == "" ]; then
@@ -206,34 +152,8 @@ function cleanup() {
     fi
 }
 
-function displayURL() {
-    port=${1}
-    echo "... Go to: http://${MY_IP}:${port}"
-    #firefox http://${MY_IP}:${port} &
-    if [ "`which google-chrome`" != "" ]; then
-        /usr/bin/google-chrome http://${MY_IP}:${port} &
-    else
-        firefox http://${MY_IP}:${port} &
-    fi
-}
-
-###################################################
-#### ---- Replace "Key=Value" withe new value ----
-###################################################
-function replaceKeyValue() {
-    inFile=${1:-${DOCKER_ENV_FILE}}
-    keyLike=$2
-    newValue=$3
-    if [ "$2" == "" ]; then
-        echo "**** ERROR: Empty Key value! Abort!"
-        exit 1
-    fi
-    sed -i -E 's/^('$keyLike'[[:blank:]]*=[[:blank:]]*).*/\1'$newValue'/' $inFile
-}
-#### ---- Replace docker.env with local user's UID and GID ----
-replaceKeyValue ${DOCKER_ENV_FILE} "USER_ID" "$(id -u $USER)"
-replaceKeyValue ${DOCKER_ENV_FILE} "GROUP_ID" "$(id -g $USER)"
-
+#instanceName=my-${1:-${imageTag%/*}}_$RANDOM
+#instanceName=my-${1:-${imageTag##*/}}
 ## -- transform '-' and space to '_' 
 #instanceName=`echo $(basename ${imageTag})|tr '[:upper:]' '[:lower:]'|tr "/\-: " "_"`
 instanceName=`echo $(basename ${imageTag})|tr '[:upper:]' '[:lower:]'|tr "/: " "_"`
@@ -244,22 +164,19 @@ echo "---------------------------------------------"
 
 cleanup
 
-#### run restart options: { no, on-failure, unless-stopped, always }
-RESTART_OPTION=no
-
+export DISPLAY=$(ifconfig en0 | grep inet | awk '$1=="inet" {print $2}'):0
 echo ${DISPLAY}
-xhost +SI:localuser:$(id -un) 
-DISPLAY=${MY_IP}:0 \
+/usr/X11/bin/xhost +SI:localuser:$(id -un) 
+#    --user=$(id -u):$(id -g) \
 docker run -it \
     --name=${instanceName} \
-    --restart=${RESTART_OPTION} \
+    --restart=always \
     ${privilegedString} \
     -e DISPLAY=$DISPLAY \
     -v /tmp/.X11-unix:/tmp/.X11-unix \
-    --user $(id -u $USER) \
     ${VOLUME_MAP} \
     ${PORT_MAP} \
-    ${imageTag} $*
+    ${imageTag}
 
 cleanup
 
